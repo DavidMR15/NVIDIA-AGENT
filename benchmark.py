@@ -17,7 +17,7 @@ for c in cases:
         out = ""
     secs = round(time.time() - t0)
     result = re.findall(r"RESULT: (\S+)", out)
-    intact = re.findall(r"Original tests intact: (\S+)", out)
+    intact = re.findall(r"Original tests intact: ([^,\s]+)", out)
     iters = len(re.findall(r"=== Iteration", out))
     tokens = sum(int(t) for t in re.findall(r"\[tokens\] (\d+)", out))
     rows.append(f"| {c['name']} | {result[-1] if result else 'ERROR'} | "
