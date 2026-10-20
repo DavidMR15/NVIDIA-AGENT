@@ -27,7 +27,7 @@ CONFIG_FILES = {"conftest.py", "pytest.ini", "setup.cfg", "tox.ini", "pyproject.
 SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", ".venv", "node_modules"}
 NEW_TESTS = set()
 
-
+#functions 
 def is_protected(rel):
     base = os.path.basename(rel)
     return base.startswith("test_") or base.endswith("_test.py") or base in CONFIG_FILES
@@ -63,7 +63,7 @@ def list_files():
             out.append(os.path.relpath(os.path.join(root, f), WORK))
     return "\n".join(sorted(out))
 
-
+#read file
 def read_file(path, start=1, end=None):
     with open(safe(path), errors="ignore") as f:
         lines = f.read().splitlines()
@@ -98,7 +98,7 @@ def search_code(pattern, path="."):
                 continue
     return "\n".join(hits) or "No matches."
 
-
+#edii file
 def edit_file(path, old, new):
     full = safe(path)
     rel = os.path.relpath(full, WORK)
@@ -112,7 +112,7 @@ def edit_file(path, old, new):
         f.write(content.replace(old, new))
     return "OK: file edited."
 
-
+#add test, always before run test
 def add_test(path, content):
     base = os.path.basename(path)
     if not (base.startswith("test_") and base.endswith(".py")):
@@ -126,7 +126,7 @@ def add_test(path, content):
     NEW_TESTS.add(os.path.relpath(full, WORK))
     return "OK: test created."
 
-
+#run test
 def run_tests():
     try:
         r = subprocess.run([sys.executable, "-m", "pytest", "-q"],

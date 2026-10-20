@@ -4,10 +4,10 @@ PRIORITIES = {1: "low", 2: "medium", 3: "high"}
 
 
 class Task:
-    def __init__(self, title, priority=1, tags=None):
+    def __init__(self, title, priority=1, tags=[]):
         self.title = title
         self.priority = priority
-        self.tags = tags if tags is not None else []
+        self.tags = tags
         self.done = False
 
     def add_tag(self, tag):

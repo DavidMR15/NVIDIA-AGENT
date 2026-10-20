@@ -7,7 +7,7 @@ def rank_players(scores):
     Ties share the same rank (1, 2, 2, 4 style) and are listed
     alphabetically by name.
     """
-    ordered = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    ordered = sorted(scores.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
     result = []
     prev_score = None
     rank = 0

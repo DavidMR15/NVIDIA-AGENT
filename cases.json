@@ -34,14 +34,5 @@
     "name": "low-stock-feature",
     "repo": "demo_repo_7",
     "feature": "Add a function low_stock(inv, threshold) in a new module alerts.py that returns the sorted list of SKUs whose quantity is below threshold, and a function restock_value(inv, threshold, target) that returns the total cost (rounded to 2 decimals) of raising every low-stock SKU up to the target quantity"
-  },
-  {"name": "cart-and-stats", 
-  "repo": "demo_repo_8", 
-  "feature": null},
-  {"name": "cart-and-stats", 
-  "repo": "demo_repo_9", 
-  "feature": null},
-  {"name": "cart-and-stats", 
-  "repo": "demo_repo_10", 
-  "feature": null}
+  }
 ]
