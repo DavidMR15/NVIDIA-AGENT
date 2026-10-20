@@ -1,0 +1,5 @@
+[
+  {"name": "average-off-by-one", "repo": "demo_repo", "feature": null},
+  {"name": "cart-and-stats", "repo": "demo_repo_2", "feature": null},
+  {"name": "median-feature", "repo": "demo_repo_3", "feature": "Add a function median(numbers) that returns the median of a list, or None if the list is empty"}
+]
