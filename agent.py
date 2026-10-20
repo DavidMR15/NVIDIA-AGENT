@@ -1,4 +1,4 @@
-import os, sys, json, shutil, subprocess, tempfile, difflib
+import os, sys, json, shutil, subprocess, tempfile, difflib, hashlib, argparse
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -9,13 +9,41 @@ client = OpenAI(
 )
 MODEL = "nvidia/nemotron-3-super-120b-a12b"
 MAX_ITERS = 12
-MAX_OUT = 3000  # recorta salidas largas para ahorrar tokens
+MAX_OUT = 3000
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "demo_repo"
+ap = argparse.ArgumentParser()
+ap.add_argument("repo", nargs="?", default="demo_repo")
+ap.add_argument("--feature", help="Descripción de una función nueva a implementar")
+CLI = ap.parse_args()
+SRC, FEATURE = CLI.repo, CLI.feature
+
 WORK = tempfile.mkdtemp(prefix="agent_")
 shutil.copytree(SRC, WORK, dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+print(f"[agente] modo: {'función nueva' if FEATURE else 'arreglar bug'}")
 print(f"[agente] trabajando en una copia: {WORK}")
+
+CONFIG_FILES = {"conftest.py", "pytest.ini", "setup.cfg", "tox.ini", "pyproject.toml"}
+NEW_TESTS = set()
+
+
+def is_protected(rel):
+    base = os.path.basename(rel)
+    return base.startswith("test_") or base.endswith("_test.py") or base in CONFIG_FILES
+
+
+def sha(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+# Huellas de los tests originales, para detectar trampa al final
+ORIGINAL = {}
+for _root, _dirs, _files in os.walk(WORK):
+    for _f in _files:
+        _rel = os.path.relpath(os.path.join(_root, _f), WORK)
+        if is_protected(_rel):
+            ORIGINAL[_rel] = sha(os.path.join(WORK, _rel))
 
 
 def safe(path):
@@ -40,9 +68,10 @@ def read_file(path):
 
 
 def edit_file(path, old, new):
-    if os.path.basename(path).startswith("test_"):
-        return "ERROR: no se permite editar archivos de test."
     full = safe(path)
+    rel = os.path.relpath(full, WORK)
+    if is_protected(rel) and rel not in NEW_TESTS:
+        return "ERROR: no se permite editar tests originales ni archivos de configuración de pytest."
     with open(full) as f:
         content = f.read()
     if content.count(old) != 1:
@@ -50,6 +79,20 @@ def edit_file(path, old, new):
     with open(full, "w") as f:
         f.write(content.replace(old, new))
     return "OK: archivo editado."
+
+
+def add_test(path, content):
+    base = os.path.basename(path)
+    if not (base.startswith("test_") and base.endswith(".py")):
+        return "ERROR: el archivo debe llamarse test_*.py"
+    full = safe(path)
+    if os.path.exists(full):
+        return "ERROR: ese archivo ya existe; no se pueden sobrescribir tests."
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w") as f:
+        f.write(content)
+    NEW_TESTS.add(os.path.relpath(full, WORK))
+    return "OK: test creado."
 
 
 def run_tests():
@@ -73,31 +116,52 @@ TOOLS = [
     {"type": "function", "function": {"name": "read_file",
         "description": "Lee un archivo del repo.", "parameters": obj({"path": S}, ["path"])}},
     {"type": "function", "function": {"name": "edit_file",
-        "description": "Reemplaza el texto exacto 'old' por 'new' en un archivo (old debe aparecer una sola vez). No edita tests.",
+        "description": "Reemplaza el texto exacto 'old' por 'new' en un archivo (old debe aparecer una sola vez). No edita tests originales.",
         "parameters": obj({"path": S, "old": S, "new": S}, ["path", "old", "new"])}},
+    {"type": "function", "function": {"name": "add_test",
+        "description": "Crea un archivo de test NUEVO (test_*.py). No puede sobrescribir archivos existentes.",
+        "parameters": obj({"path": S, "content": S}, ["path", "content"])}},
     {"type": "function", "function": {"name": "run_tests",
         "description": "Corre pytest en el repo y devuelve el resultado.", "parameters": obj({}, [])}},
 ]
-FUNCS = {"list_files": list_files, "read_file": read_file,
-         "edit_file": edit_file, "run_tests": run_tests}
+FUNCS = {"list_files": list_files, "read_file": read_file, "edit_file": edit_file,
+         "add_test": add_test, "run_tests": run_tests}
 
-SYSTEM = (
-    "Eres un agente que arregla bugs. Recibes un repo con un test que falla. "
-    "Flujo: lee el test y el código, diagnostica la causa en una frase, aplica el "
-    "cambio MÍNIMO con edit_file y verifica con run_tests. Nunca modifiques los tests. "
-    "Cuando los tests pasen, responde con un resumen breve: causa y arreglo."
+SYSTEM_BUG = (
+    "Eres un agente que arregla bugs. Recibes un repo con tests que fallan. "
+    "Flujo: lee los tests y el código, diagnostica la causa en una frase, aplica el "
+    "cambio MÍNIMO con edit_file y verifica con run_tests. Nunca modifiques los tests "
+    "existentes ni hardcodees resultados esperados. Cuando todo pase, responde con un "
+    "resumen breve: causa y arreglo."
+)
+SYSTEM_FEATURE = (
+    "Eres un agente que implementa funciones nuevas con TDD. Flujo: "
+    "1) lee el código existente; "
+    "2) escribe con add_test un test NUEVO que describa el comportamiento pedido, "
+    "incluyendo casos borde (por ejemplo lista vacía); "
+    "3) corre run_tests y confirma que el test nuevo FALLA; "
+    "4) implementa lo mínimo con edit_file; "
+    "5) corre run_tests hasta que todo pase. "
+    "Nunca modifiques tests existentes ni hardcodees resultados. "
+    "Termina con un resumen breve: qué test agregaste y qué cambiaste."
 )
 
 print("[agente] corriendo tests iniciales...")
 first = run_tests()
 print(first)
-if first.startswith("PASSED"):
-    sys.exit("Los tests ya pasan, no hay nada que arreglar.")
 
-messages = [
-    {"role": "system", "content": SYSTEM},
-    {"role": "user", "content": f"Estos tests fallan:\n{first}\nArréglalo."},
-]
+if FEATURE:
+    system = SYSTEM_FEATURE
+    user = (f"Petición de función nueva: {FEATURE}\n\n"
+            f"Estado inicial de los tests:\n{first}")
+else:
+    if first.startswith("PASSED"):
+        sys.exit("Los tests ya pasan, no hay nada que arreglar.")
+    system = SYSTEM_BUG
+    user = f"Estos tests fallan:\n{first}\nArréglalo."
+
+messages = [{"role": "system", "content": system},
+            {"role": "user", "content": user}]
 
 for i in range(1, MAX_ITERS + 1):
     print(f"\n=== Iteración {i}/{MAX_ITERS} ===")
@@ -121,9 +185,9 @@ for i in range(1, MAX_ITERS + 1):
     })
     for tc in msg.tool_calls:
         name = tc.function.name
-        args = json.loads(tc.function.arguments or "{}")
-        print(f"[herramienta] {name}({json.dumps(args, ensure_ascii=False)[:150]})")
         try:
+            args = json.loads(tc.function.arguments or "{}")
+            print(f"[herramienta] {name}({json.dumps(args, ensure_ascii=False)[:150]})")
             result = FUNCS[name](**args)
         except Exception as e:
             result = f"ERROR: {e}"
@@ -133,17 +197,34 @@ else:
     print("\n[agente] se alcanzó el máximo de iteraciones.")
 
 print("\n=== VERIFICACIÓN FINAL ===")
-print(run_tests())
+final = run_tests()
+print(final)
 
-print("\n=== DIFF ===")
-for root, _, files in os.walk(WORK):
-    for f in files:
+tampered = [r for r, h in ORIGINAL.items()
+            if not os.path.exists(os.path.join(WORK, r)) or sha(os.path.join(WORK, r)) != h]
+print("Tests originales intactos:", "SÍ" if not tampered else f"NO, modificados: {tampered}")
+if FEATURE:
+    print("Tests nuevos agregados:", sorted(NEW_TESTS) or "NINGUNO")
+ok = final.startswith("PASSED") and not tampered and (not FEATURE or bool(NEW_TESTS))
+print("RESULTADO:", "ÉXITO" if ok else "REVISAR")
+
+print("\n=== CAMBIOS ===")
+for root, dirs, files in os.walk(WORK):
+    dirs[:] = [d for d in dirs if d not in ("__pycache__", ".pytest_cache")]
+    for f in sorted(files):
         if not f.endswith(".py"):
             continue
         new_path = os.path.join(root, f)
-        old_path = os.path.join(SRC, os.path.relpath(new_path, WORK))
+        rel = os.path.relpath(new_path, WORK)
+        old_path = os.path.join(SRC, rel)
+        with open(new_path) as fh:
+            b = fh.read().splitlines()
         if os.path.exists(old_path):
-            a, b = open(old_path).read().splitlines(), open(new_path).read().splitlines()
-            d = list(difflib.unified_diff(a, b, f"antes/{f}", f"despues/{f}", lineterm=""))
+            with open(old_path) as fh:
+                a = fh.read().splitlines()
+            d = list(difflib.unified_diff(a, b, f"antes/{rel}", f"despues/{rel}", lineterm=""))
             if d:
                 print("\n".join(d))
+        else:
+            print(f"\n+++ ARCHIVO NUEVO: {rel}")
+            print("\n".join("+" + line for line in b))
