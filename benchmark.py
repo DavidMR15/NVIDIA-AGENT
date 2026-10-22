@@ -11,7 +11,7 @@ for c in cases:
     print(f"Running {c['name']}...", flush=True)
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         out = proc.stdout
     except subprocess.TimeoutExpired:
         out = ""

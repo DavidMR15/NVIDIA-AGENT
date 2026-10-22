@@ -34,5 +34,44 @@
     "name": "low-stock-feature",
     "repo": "demo_repo_7",
     "feature": "Add a function low_stock(inv, threshold) in a new module alerts.py that returns the sorted list of SKUs whose quantity is below threshold, and a function restock_value(inv, threshold, target) that returns the total cost (rounded to 2 decimals) of raising every low-stock SKU up to the target quantity"
-  }
+  },
+  {"name": "more-itertools-falsy-exception", 
+  "repo": "demo_repo_8", 
+  "feature": null
+},
+  {"name": "boltons-barrellist", 
+  "repo": "demo_repo_9", 
+  "feature": null
+},
+  {"name": "toolz-interpose-empty", 
+  "repo": "demo_repo_10", 
+  "feature": null
+},
+
+{
+  "name": "requests-url-header-bug",
+  "repo": "demo_repo_11",
+  "feature": null
+},
+{
+  "name": "click-variadic-option-bug",
+  "repo": "demo_repo_12",
+  "feature": null
+},
+{
+  "name": "marshmallow-nested-schema-bug",
+  "repo": "demo_repo_13",
+  "feature": null
+},
+{
+  "name": "tornado-async-ioloop-timeout",
+  "repo": "demo_repo_14",
+  "feature": null
+},
+{
+  "name": "pytest-assert-rewrite-edgecase",
+  "repo": "demo_repo_15",
+  "feature": null
+}
 ]
+

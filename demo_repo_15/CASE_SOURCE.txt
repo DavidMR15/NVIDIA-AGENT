@@ -1,0 +1,1 @@
+astanin/python-tabulate @ 20c6370d5da2dae89b305bfb6c7f12a0f8b7236c~1 (fix commit: 20c6370d5da2dae89b305bfb6c7f12a0f8b7236c)
