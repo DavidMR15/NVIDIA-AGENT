@@ -23,10 +23,13 @@ ap.add_argument("--feature", help="Description of a new feature to implement")
 ap.add_argument("--scaffold", help="Natural-language spec of a whole module/app to build from scratch")
 ap.add_argument("--out", help="Where to save the generated project in scaffold mode "
                               "(default: scaffold_output/<name>)")
+ap.add_argument("--explain", action="store_true",
+                help="Explain the repo and let you ask questions about it (read-only)")
 CLI = ap.parse_args()
 FEATURE, SCAFFOLD = CLI.feature, CLI.scaffold
-if FEATURE and SCAFFOLD:
-    sys.exit("Use either --feature or --scaffold, not both.")
+EXPLAIN = CLI.explain
+if sum(map(bool, (FEATURE, SCAFFOLD, EXPLAIN))) > 1:
+    sys.exit("Use only one of --feature, --scaffold or --explain.")
 if SCAFFOLD and "MAX_ITERS" not in os.environ:
     MAX_ITERS = 80          # building a project takes more steps than fixing a bug
 if CLI.repo is None and not SCAFFOLD:
@@ -39,9 +42,9 @@ else:
 WORK = os.path.realpath(tempfile.mkdtemp(prefix="agent_"))
 shutil.copytree(SRC, WORK, dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-print(f"[agent] mode: {'scaffold (new project)' if SCAFFOLD else 'new feature' if FEATURE else 'bug fix'}")
+print(f"[agent] mode: {'scaffold (new project)' if SCAFFOLD else 'explain (repo Q&A)' if EXPLAIN else 'new feature' if FEATURE else 'bug fix'}")
 print(f"[agent] working on a copy: {WORK}")
-if not ESCALATE_MODEL:
+if not ESCALATE_MODEL and not EXPLAIN:
     print("[agent] note: AGENT_ESCALATION_MODEL is not set, so the agent will never escalate to a stronger model.")
 
 CONFIG_FILES = {"conftest.py", "pytest.ini", "setup.cfg", "tox.ini", "pyproject.toml"}
@@ -748,7 +751,7 @@ SYSTEM_BUG = (
     "When all tests pass, reply in English with a short summary: the root cause and "
     "the fix. "
     "STRICT RULE: Do not create dummy, placeholder, or trivial test files (e.g., containing "
-    "`assert True`) simply to make pytest pass. You must locate, execute, and fix the actual " 
+    "`assert True`) simply to make pytest pass. You must locate, execute, and fix the actual "
     "failing tests in the existing repository codebase."
 )
 SYSTEM_FEATURE = (
@@ -809,6 +812,112 @@ SYSTEM_SCAFFOLD = (
     "signature and the expiration, and pin the algorithm. "
     "Keep files small and focused. For async code, use pytest-asyncio or FastAPI's TestClient."
 )
+
+# ---------------------------------------------------------------------------
+# EXPLAIN MODE: gives the user context about the repo and lets them ask questions.
+# Read-only: it never edits files and never runs tests.
+# ---------------------------------------------------------------------------
+EXPLAIN_TOOLS = [t for t in TOOLS if t["function"]["name"] in READ_ONLY]
+AGENT_LANG = os.environ.get("AGENT_LANG", "English")
+
+SYSTEM_EXPLAIN = (
+    "You are a code guide. You help a person understand a repository: what it does, how it is "
+    "organized, how the pieces connect, and how to run its tests. You are READ-ONLY: you cannot "
+    "and must not change anything. Use search_code to locate things, read_symbol to read a whole "
+    "function or class, and read_file for anything else. Ground every claim in code you actually "
+    "read and cite it as file:line or file.function. If you did not verify something, say so "
+    "instead of guessing. Keep answers short and concrete. "
+    f"For the first overview, write in {AGENT_LANG}; for later questions, answer in the language "
+    "the person writes in."
+)
+
+OVERVIEW_REQUEST = (
+    "Give a first overview of this repository: 1) what it does, 2) the folder/file structure and "
+    "the role of each main file, 3) the main flow of execution, 4) how to run it and its tests, "
+    "5) anything surprising or risky. Then invite the person to ask questions."
+)
+
+
+def repo_digest(max_chars=8000):
+    """Cheap, model-free summary of the repo, so the first answer needs few tool calls."""
+    files = list_files().splitlines()
+    parts = ["FILES:\n" + "\n".join(files)]
+    for rel in files:
+        if not rel.endswith(".py"):
+            continue
+        try:
+            with open(safe(rel), errors="ignore") as f:
+                src = f.read()
+            tree = ast.parse(src)
+        except (SyntaxError, OSError):
+            continue
+        names = [("class " if isinstance(n, ast.ClassDef) else "def ") + n.name for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        doc = (ast.get_docstring(tree) or "")[:120]
+        parts.append(f"{rel} ({len(src.splitlines())} lines): " + ", ".join(names[:25])
+                     + (f" | doc: {doc}" if doc else ""))
+    for name in ("README.md", "readme.md"):
+        p = os.path.join(WORK, name)
+        if os.path.exists(p):
+            with open(p, errors="ignore") as f:
+                parts.append(f"{name} (start):\n" + f.read()[:1500])
+            break
+    return "\n\n".join(parts)[:max_chars]
+
+
+def explain_mode():
+    if not list_files():
+        sys.exit("The repository is empty: there is nothing to explain.")
+    messages = [{"role": "system", "content": SYSTEM_EXPLAIN},
+                {"role": "user", "content": "Repository digest:\n" + repo_digest()
+                 + "\n\n" + OVERVIEW_REQUEST}]
+
+    def turn():
+        for _ in range(12):                      # max tool rounds per question
+            resp = client.chat.completions.create(
+                model=MODEL, messages=messages, tools=EXPLAIN_TOOLS, max_tokens=MAX_TOKENS)
+            ch = resp.choices[0]
+            msg = ch.message
+            if ch.finish_reason == "length":
+                messages.append({"role": "user", "content":
+                                 "Your reply was cut off. Be briefer and answer again."})
+                continue
+            if not msg.tool_calls:
+                messages.append({"role": "assistant", "content": msg.content or ""})
+                return msg.content or "(no text)"
+            messages.append({"role": "assistant", "content": msg.content or "",
+                             "tool_calls": [{"id": tc.id, "type": "function",
+                                             "function": {"name": tc.function.name,
+                                                          "arguments": tc.function.arguments}}
+                                            for tc in msg.tool_calls]})
+            for tc in msg.tool_calls:
+                try:
+                    if tc.function.name not in READ_ONLY:
+                        raise ValueError("only read-only tools are available")
+                    args = normalize(json.loads(tc.function.arguments or "{}"))
+                    result = FUNCS[tc.function.name](**args)   # direct call: re-reading is allowed
+                except Exception as e:
+                    result = f"ERROR: {e}"
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+        return "I could not finish within the tool limit. Try a narrower question."
+
+    print("\n" + turn())
+    print("\n[agent] Ask anything about the repo. Type 'exit' (or 'salir') to quit.")
+    while True:
+        try:
+            q = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if q.lower() in ("exit", "quit", "salir"):
+            break
+        if q:
+            messages.append({"role": "user", "content": q})
+            print("\n" + turn())
+
+
+if EXPLAIN:
+    explain_mode()
+    sys.exit(0)
 
 if SCAFFOLD:
     first = "(no tests yet: this is a new project)"
