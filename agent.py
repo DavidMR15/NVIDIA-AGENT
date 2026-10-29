@@ -17,31 +17,25 @@ AUTO_TEST = os.environ.get("AUTO_TEST", "1") == "1"
 ESCALATE_MODEL = os.environ.get("AGENT_ESCALATION_MODEL")   # optional stronger model, e.g. Ultra
 STUCK_AFTER = int(os.environ.get("STUCK_AFTER", "6"))       # iterations without progress before escalating
 READ_LIMIT = int(os.environ.get("READ_LIMIT", "6"))         # read-only calls in a row before only action tools are offered
+AGENT_LANG = os.environ.get("AGENT_LANG", "English")        # language of the first overview in explain mode
 
 ap = argparse.ArgumentParser()
 ap.add_argument("repo", nargs="?", default=None)
 ap.add_argument("--feature", help="Description of a new feature to implement")
 ap.add_argument("--scaffold", help="Natural-language spec of a whole module/app to build from scratch")
-ap.add_argument("--optimize", action="store_true",                help="Fix bugs, clean up and reduce the algorithmic complexity of the code")
-ap.add_argument("--out", help="Where to save the generated project in scaffold mode "
-                              "(default: scaffold_output/<name>)")
+ap.add_argument("--optimize", action="store_true",
+                help="Fix bugs, clean up and reduce the algorithmic complexity of the code")
 ap.add_argument("--explain", action="store_true",
                 help="Explain the repo and let you ask questions about it (read-only)")
+ap.add_argument("--out", help="Where to save the result "
+                              "(default: scaffold_output/<name> in scaffold mode, "
+                              "agent_output/<repo>_fixed otherwise)")
 CLI = ap.parse_args()
-<<<<<<< HEAD
-FEATURE, SCAFFOLD, OPTIMIZE = CLI.feature, CLI.scaffold, CLI.optimize
-if sum(map(bool, (FEATURE, SCAFFOLD, OPTIMIZE))) > 1:
-    sys.exit("Use only one of --feature, --scaffold or --optimize.")
+FEATURE, SCAFFOLD, OPTIMIZE, EXPLAIN = CLI.feature, CLI.scaffold, CLI.optimize, CLI.explain
+if sum(map(bool, (FEATURE, SCAFFOLD, OPTIMIZE, EXPLAIN))) > 1:
+    sys.exit("Use only one of --feature, --scaffold, --optimize or --explain.")
 if (SCAFFOLD or OPTIMIZE) and "MAX_ITERS" not in os.environ:
     MAX_ITERS = 80          # building a project / optimizing takes more steps than fixing a bug
-=======
-FEATURE, SCAFFOLD = CLI.feature, CLI.scaffold
-EXPLAIN = CLI.explain
-if sum(map(bool, (FEATURE, SCAFFOLD, EXPLAIN))) > 1:
-    sys.exit("Use only one of --feature, --scaffold or --explain.")
-if SCAFFOLD and "MAX_ITERS" not in os.environ:
-    MAX_ITERS = 80          # building a project takes more steps than fixing a bug
->>>>>>> 4d68385b4c99cdff9fc0d8976129b0721a421070
 if CLI.repo is None and not SCAFFOLD:
     CLI.repo = "demo_repo"
 if SCAFFOLD and not (CLI.repo and os.path.isdir(CLI.repo)):
@@ -55,11 +49,9 @@ else:
 WORK = os.path.realpath(tempfile.mkdtemp(prefix="agent_"))
 shutil.copytree(SRC, WORK, dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-<<<<<<< HEAD
-print(f"[agent] mode: {'scaffold (new project)' if SCAFFOLD else 'optimize' if OPTIMIZE else 'new feature' if FEATURE else 'bug fix'}")
-=======
-print(f"[agent] mode: {'scaffold (new project)' if SCAFFOLD else 'explain (repo Q&A)' if EXPLAIN else 'new feature' if FEATURE else 'bug fix'}")
->>>>>>> 4d68385b4c99cdff9fc0d8976129b0721a421070
+MODE_NAME = ('scaffold (new project)' if SCAFFOLD else 'optimize' if OPTIMIZE
+             else 'explain (repo Q&A)' if EXPLAIN else 'new feature' if FEATURE else 'bug fix')
+print(f"[agent] mode: {MODE_NAME}")
 print(f"[agent] working on a copy: {WORK}")
 if not ESCALATE_MODEL and not EXPLAIN:
     print("[agent] note: AGENT_ESCALATION_MODEL is not set, so the agent will never escalate to a stronger model.")
@@ -1205,7 +1197,6 @@ SYSTEM_SCAFFOLD = (
     "Keep files small and focused. For async code, use pytest-asyncio or FastAPI's TestClient."
 )
 
-<<<<<<< HEAD
 SYSTEM_OPTIMIZE = (
     "You are a code optimization agent. The code must end up CORRECT, CLEAN and with the lowest "
     "algorithmic complexity you can reach, WITHOUT changing its behavior. Work through these phases "
@@ -1250,13 +1241,11 @@ SYSTEM_OPTIMIZE = (
     "untouched and why."
 )
 
-=======
-# ---------------------------------------------------------------------------
-# EXPLAIN MODE: gives the user context about the repo and lets them ask questions.
+# ---------------------------------------------------------------- explain mode
+# Gives the user context about the repo and lets them ask questions.
 # Read-only: it never edits files and never runs tests.
-# ---------------------------------------------------------------------------
 EXPLAIN_TOOLS = [t for t in TOOLS if t["function"]["name"] in READ_ONLY]
-AGENT_LANG = os.environ.get("AGENT_LANG", "English")
+EXPLAIN_NAMES = {t["function"]["name"] for t in EXPLAIN_TOOLS}
 
 SYSTEM_EXPLAIN = (
     "You are a code guide. You help a person understand a repository: what it does, how it is "
@@ -1330,7 +1319,7 @@ def explain_mode():
                                             for tc in msg.tool_calls]})
             for tc in msg.tool_calls:
                 try:
-                    if tc.function.name not in READ_ONLY:
+                    if tc.function.name not in EXPLAIN_NAMES:
                         raise ValueError("only read-only tools are available")
                     args = normalize(json.loads(tc.function.arguments or "{}"))
                     result = FUNCS[tc.function.name](**args)   # direct call: re-reading is allowed
@@ -1357,7 +1346,7 @@ if EXPLAIN:
     explain_mode()
     sys.exit(0)
 
->>>>>>> 4d68385b4c99cdff9fc0d8976129b0721a421070
+# ---------------------------------------------------------------- main loop
 if SCAFFOLD:
     first = "(no tests yet: this is a new project)"
     print("[agent] scaffold mode: starting without tests; the plan comes first")
@@ -1468,6 +1457,7 @@ for i in range(1, MAX_ITERS + 1):
 else:
     print("\n[agent] reached the maximum number of iterations.")
 
+# ---------------------------------------------------------------- final verification
 print("\n=== FINAL VERIFICATION ===")
 final = run_tests()
 if (not SCAFFOLD and not final.startswith("PASSED") and BEST_FAILS is not None
@@ -1547,6 +1537,7 @@ if SCAFFOLD:
     sys.exit(0)
 
 print("\n=== CHANGES ===")
+patch, changed = [], []
 for root, dirs, files in os.walk(WORK):
     dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
     for f in sorted(files):
@@ -1557,12 +1548,24 @@ for root, dirs, files in os.walk(WORK):
         old_path = os.path.join(SRC, rel)
         with open(new_path) as fh:
             b = fh.read().splitlines()
+        a = []
         if os.path.exists(old_path):
             with open(old_path) as fh:
                 a = fh.read().splitlines()
-            d = list(difflib.unified_diff(a, b, f"before/{rel}", f"after/{rel}", lineterm=""))
-            if d:
-                print("\n".join(d))
-        else:
-            print(f"\n+++ NEW FILE: {rel}")
-            print("\n".join("+" + line for line in b))
+        d = list(difflib.unified_diff(a, b, f"a/{rel}" if a else "/dev/null",
+                                      f"b/{rel}", lineterm=""))
+        if d:
+            changed.append(rel)
+            patch += d
+            print("\n".join(d))
+
+# ---------------------------------------------------------------- save the result
+name = os.path.splitext(os.path.basename(os.path.normpath(CLI.repo or "repo")))[0]
+out_dir = CLI.out or os.path.join("agent_output", name + ("_fixed" if ok else "_review"))
+shutil.copytree(WORK, out_dir, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".deps", ".venv", ".git"))
+with open(os.path.join(out_dir, "changes.patch"), "w") as fh:
+    fh.write("\n".join(patch) + "\n")
+print(f"\n=== RESULT SAVED TO: {os.path.abspath(out_dir)} ===")
+print("Modified/new files:", changed or "none")
+print("Patch (apply with `git apply` or `patch -p1`):", os.path.join(out_dir, "changes.patch"))
